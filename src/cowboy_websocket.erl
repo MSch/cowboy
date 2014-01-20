@@ -222,9 +222,14 @@ handler_loop(State=#state{socket=Socket, messages={OK, Closed, Error},
 		timeout_ref=TRef}, Req, HandlerState, SoFar) ->
 	receive
 		{OK, Socket, Data} ->
-			State2 = handler_loop_timeout(State),
-			websocket_data(State2, Req, HandlerState,
-				<< SoFar/binary, Data/binary >>);
+			case (byte_size(SoFar) + byte_size(Data)) of
+				Length when Length > 8192 ->
+					handler_terminate(State, Req, HandlerState, {error, max_length_exceeded});
+				_Otherwise ->
+					State2 = handler_loop_timeout(State),
+					websocket_data(State2, Req, HandlerState,
+						<< SoFar/binary, Data/binary >>)
+			end;
 		{Closed, Socket} ->
 			handler_terminate(State, Req, HandlerState, {error, closed});
 		{Error, Socket, Reason} ->
@@ -528,9 +533,14 @@ websocket_payload_loop(State=#state{socket=Socket, transport=Transport,
 	Transport:setopts(Socket, [{active, once}]),
 	receive
 		{OK, Socket, Data} ->
-			State2 = handler_loop_timeout(State),
-			websocket_payload(State2, Req, HandlerState,
-				Opcode, Len, MaskKey, Unmasked, UnmaskedLen, Data, Rsv);
+			case (UnmaskedLen + byte_size(Data)) of
+				Length when Length > 8192 ->
+					handler_terminate(State, Req, HandlerState, {error, max_length_exceeded});
+				_Otherwise ->
+					State2 = handler_loop_timeout(State),
+					websocket_payload(State2, Req, HandlerState,
+						Opcode, Len, MaskKey, Unmasked, UnmaskedLen, Data, Rsv)
+			end;
 		{Closed, Socket} ->
 			handler_terminate(State, Req, HandlerState, {error, closed});
 		{Error, Socket, Reason} ->
