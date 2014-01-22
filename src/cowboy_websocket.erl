@@ -223,7 +223,7 @@ handler_loop(State=#state{socket=Socket, messages={OK, Closed, Error},
 	receive
 		{OK, Socket, Data} ->
 			case (byte_size(SoFar) + byte_size(Data)) of
-				Length when Length > 8192 ->
+				Length when Length > 1048576 ->
 					handler_terminate(State, Req, HandlerState, {error, max_length_exceeded});
 				_Otherwise ->
 					State2 = handler_loop_timeout(State),
