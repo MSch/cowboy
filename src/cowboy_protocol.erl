@@ -52,7 +52,7 @@
 -export([start_link/4]).
 
 %% Internal.
--export([init/4]).
+-export([init/5]).
 -export([parse_request/3]).
 -export([resume/6]).
 
@@ -94,7 +94,7 @@
 %% @doc Start an HTTP protocol process.
 -spec start_link(ranch:ref(), inet:socket(), module(), opts()) -> {ok, pid()}.
 start_link(Ref, Socket, Transport, Opts) ->
-	Pid = spawn_link(?MODULE, init, [Ref, Socket, Transport, Opts]),
+	Pid = spawn_link(?MODULE, init, [self(), Ref, Socket, Transport, Opts]),
 	{ok, Pid}.
 
 %% Internal.
@@ -108,8 +108,8 @@ get_value(Key, Opts, Default) ->
 	end.
 
 %% @private
--spec init(ranch:ref(), inet:socket(), module(), opts()) -> ok.
-init(Ref, Socket, Transport, Opts) ->
+-spec init(pid(), ranch:ref(), inet:socket(), module(), opts()) -> ok.
+init(Parent, Ref, Socket, Transport, Opts) ->
 	Compress = get_value(compress, Opts, false),
 	MaxEmptyLines = get_value(max_empty_lines, Opts, 5),
 	MaxHeaderNameLength = get_value(max_header_name_length, Opts, 64),
@@ -118,7 +118,8 @@ init(Ref, Socket, Transport, Opts) ->
 	MaxKeepalive = get_value(max_keepalive, Opts, 100),
 	MaxRequestLineLength = get_value(max_request_line_length, Opts, 4096),
 	Middlewares = get_value(middlewares, Opts, [cowboy_router, cowboy_handler]),
-	Env = [{listener, Ref}|get_value(env, Opts, [])],
+	Debug = get_value(debug, Opts, []),	
+	Env = [{parent, Parent}, {debug, Debug}, {listener, Ref}|get_value(env, Opts, [])],
 	OnRequest = get_value(onrequest, Opts, undefined),
 	OnResponse = get_value(onresponse, Opts, undefined),
 	Timeout = get_value(timeout, Opts, 5000),
