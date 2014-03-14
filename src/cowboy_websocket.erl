@@ -258,7 +258,7 @@ system_code_change([State=#state{handler=Handler}, Req, HandlerState, SoFar], _M
 	| {suspend, module(), atom(), [any()]}
 	when Req::cowboy_req:req().
 handler_loop(Parent, Debug, State=#state{socket=Socket, messages={OK, Closed, Error},
-		timeout_ref=TRef}, Req, HandlerState, SoFar) ->
+		timeout_ref=TRef, handler=Handler}, Req, HandlerState, SoFar) ->
 	receive
 		{system, From, get_state} ->
 			sys:handle_system_msg(get_state, From, Parent, ?MODULE, Debug, {HandlerState, [State, Req, HandlerState, SoFar]});
@@ -267,6 +267,9 @@ handler_loop(Parent, Debug, State=#state{socket=Socket, messages={OK, Closed, Er
 			sys:handle_system_msg(replace_state, From, Parent, ?MODULE, Debug, {NewHandlerState, [State, Req, NewHandlerState, SoFar]});
 		{system, From, SysReq} ->
 			sys:handle_system_msg(SysReq, From, Parent, ?MODULE, Debug, [State, Req, HandlerState, SoFar]);
+		{From, {_, Ref}, get_modules} -> % tell release handler which modules belong to the process. 
+			From ! {Ref, _Modules = [?MODULE, Handler]}, % see release_handler_1:maybe_get_dynamic_mods/2
+			handler_loop(Parent, Debug, State, Req, HandlerState, SoFar);
 		{'EXIT', Parent, Reason} ->
 			handler_terminate(State, Req, HandlerState, Reason);
 		{OK, Socket, Data} ->
