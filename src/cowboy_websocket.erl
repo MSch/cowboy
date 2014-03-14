@@ -27,7 +27,7 @@
 -export([upgrade/4]).
 
 %% Internal.
--export([handler_loop/4]).
+-export([handler_loop/6, system_continue/3, system_code_change/4, system_terminate/4]).
 
 -type close_code() :: 1000..4999.
 -export_type([close_code/0]).
@@ -199,10 +199,12 @@ handler_before_loop(State=#state{
 	Transport:setopts(Socket, [{active, once}]),
 	{suspend, ?MODULE, handler_loop,
 		[State#state{hibernate=false}, Req, HandlerState, SoFar]};
-handler_before_loop(State=#state{socket=Socket, transport=Transport},
+handler_before_loop(State=#state{socket=Socket, transport=Transport, env = Env},
 		Req, HandlerState, SoFar) ->
 	Transport:setopts(Socket, [{active, once}]),
-	handler_loop(State, Req, HandlerState, SoFar).
+	{_, Parent} = lists:keyfind(parent, 1, Env),
+	{_, Debug} = lists:keyfind(debug, 1, Env),	
+	handler_loop(Parent, Debug, State, Req, HandlerState, SoFar).
 
 -spec handler_loop_timeout(#state{}) -> #state{}.
 handler_loop_timeout(State=#state{timeout=infinity}) ->
@@ -212,15 +214,61 @@ handler_loop_timeout(State=#state{timeout=Timeout, timeout_ref=PrevRef}) ->
 		erlang:cancel_timer(PrevRef) end,
 	TRef = erlang:start_timer(Timeout, self(), ?MODULE),
 	State#state{timeout_ref=TRef}.
+	
+%%-----------------------------------------------------------------
+%% Callback functions for system messages handling.
+%%-----------------------------------------------------------------
+
+%% @doc Callback for sys:resume/1 or sys:resume/2.
+%%			This function is called from sys:handle_system_msg/6 when the process should continue its execution 
+%%      (for example after it has been suspended). This function never returns.
+-spec system_continue(Parent::pid(), Debug::[sys:dbg_opt()], [#state{}|cowboy_req:req()|any()|binary()]) -> no_return().
+system_continue(Parent, Debug, [State, Req, HandlerState, SoFar]) ->
+  handler_loop(Parent, Debug, State, Req, HandlerState, SoFar).
+
+%% @doc This function is called from sys:handle_system_msg/6 when the process should terminate. 
+%%      For example, this function is called when the process is suspended and its parent orders shut-down. 
+%%      It gives the process a chance to do a clean-up by calling handler_terminate/4. 
+-spec system_terminate(Reason::term(), Parent::pid(), Debug::[sys:dbg_opt()], [#state{}|cowboy_req:req()|any()|binary()]) -> no_return().
+system_terminate(Reason, _Parent, _Debug, [State, Req, HandlerState, _SoFar]) ->
+	handler_terminate(State, Req, HandlerState, Reason).
+
+%% @doc Callback for sys:change_code/4 or sys:change_code/5.
+%%      Called from sys:handle_system_msg/6 when the process should perform a code change. 
+%%      The code change is used when the internal data structure has changed. 
+%%      This function calls cowboy_websocket_handler:code_change/4 (if implemented and exported)
+%%      with the HandlerState which converts the HandlerState to the new data structure. 
+%%      OldVsn is the vsn attribute of the old version of the Module or undefined.
+-spec system_code_change([#state{}|cowboy_req:req()|any()|binary()], Module::atom(), OldVsn::term()|undefined, Extra::term()) 
+ 	-> {ok, [#state{}|cowboy_req:req()|any()|binary()]} | term().
+system_code_change([State=#state{handler=Handler}, Req, HandlerState, SoFar], _Module, OldVsn, Extra) ->
+	case erlang:function_exported(Handler, code_change, 4) of
+		true ->
+			case catch Handler:code_change(OldVsn, HandlerState, Req, Extra) of
+				{ok, NewHandlerState} -> {ok, [State, Req, NewHandlerState, SoFar]};
+				Else -> Else
+			end;
+		false -> {ok, [State, Req, HandlerState, SoFar]}
+	end.
+	
 
 %% @private
--spec handler_loop(#state{}, Req, any(), binary())
+-spec handler_loop(pid(), [sys:dbg_opt()], #state{}, Req, any(), binary())
 	-> {ok, Req, cowboy_middleware:env()}
 	| {suspend, module(), atom(), [any()]}
 	when Req::cowboy_req:req().
-handler_loop(State=#state{socket=Socket, messages={OK, Closed, Error},
+handler_loop(Parent, Debug, State=#state{socket=Socket, messages={OK, Closed, Error},
 		timeout_ref=TRef}, Req, HandlerState, SoFar) ->
 	receive
+		{system, From, get_state} ->
+			sys:handle_system_msg(get_state, From, Parent, ?MODULE, Debug, {HandlerState, [State, Req, HandlerState, SoFar]});
+		{system, From, {replace_state, StateFun}} ->
+	    NewHandlerState = try StateFun(HandlerState) catch _:_ -> HandlerState end,
+			sys:handle_system_msg(replace_state, From, Parent, ?MODULE, Debug, {NewHandlerState, [State, Req, NewHandlerState, SoFar]});
+		{system, From, SysReq} ->
+			sys:handle_system_msg(SysReq, From, Parent, ?MODULE, Debug, [State, Req, HandlerState, SoFar]);
+		{'EXIT', Parent, Reason} ->
+			handler_terminate(State, Req, HandlerState, Reason);
 		{OK, Socket, Data} ->
 			case (byte_size(SoFar) + byte_size(Data)) of
 				Length when Length > 1048576 ->
@@ -237,7 +285,7 @@ handler_loop(State=#state{socket=Socket, messages={OK, Closed, Error},
 		{timeout, TRef, ?MODULE} ->
 			websocket_close(State, Req, HandlerState, {normal, timeout});
 		{timeout, OlderTRef, ?MODULE} when is_reference(OlderTRef) ->
-			handler_loop(State, Req, HandlerState, SoFar);
+			handler_loop(Parent, Debug, State, Req, HandlerState, SoFar);
 		Message ->
 			handler_call(State, Req, HandlerState,
 				SoFar, websocket_info, Message, fun handler_before_loop/4)

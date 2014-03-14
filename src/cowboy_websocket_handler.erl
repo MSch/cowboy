@@ -82,3 +82,6 @@
 	when Req::cowboy_req:req(), State::state().
 -callback websocket_terminate(terminate_reason(), cowboy_req:req(), state())
 	-> ok.
+%% optional
+% -callback code_change(OldVsn::term(), state(), cowboy_req:req(), Extra::term())
+%   -> {ok, state()}.
